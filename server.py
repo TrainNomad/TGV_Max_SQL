@@ -29,20 +29,39 @@ def read_root():
     return {"status": "ok", "message": "API TGV Max opérationnelle"}
 
 @app.get("/stations")
-def get_stations():
+def get_stations(q: str = Query(None, description="Recherche partielle de la gare (autocomplétion)")):
     conn = get_db_connection()
     cursor = conn.cursor()
-    query = """
-    SELECT DISTINCT origin_name as name FROM trips
-    UNION
-    SELECT DISTINCT destination_name as name FROM trips
-    ORDER BY name ASC
-    """
-    cursor.execute(query)
+
+    if q and q.strip():
+        # Si un terme de recherche 'q' est fourni, filtre avec LIKE %q%
+        search_term = f"%{q.strip()}%"
+        query = """
+        SELECT DISTINCT name FROM (
+            SELECT origin_name AS name FROM trips WHERE UPPER(origin_name) LIKE UPPER(?)
+            UNION
+            SELECT destination_name AS name FROM trips WHERE UPPER(destination_name) LIKE UPPER(?)
+        )
+        ORDER BY name ASC
+        LIMIT 20
+        """
+        cursor.execute(query, (search_term, search_term))
+    else:
+        # Si aucun paramètre 'q' n'est fourni, renvoie toutes les stations (ou une liste vide selon votre besoin)
+        query = """
+        SELECT DISTINCT name FROM (
+            SELECT origin_name AS name FROM trips
+            UNION
+            SELECT destination_name AS name FROM trips
+        )
+        ORDER BY name ASC
+        """
+        cursor.execute(query)
+
     stations = [row["name"] for row in cursor.fetchall()]
     conn.close()
+    
     return {"count": len(stations), "stations": stations}
-
 # -------------------------------------------------------------------
 # FONCTION DE DÉDUPLICATION & NETTOYAGE
 # -------------------------------------------------------------------
