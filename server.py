@@ -37,47 +37,58 @@ def read_root():
 # -------------------------------------------------------------------
 # 1. AUTOCOMPLÉTION (Gares précises + Villes Métropoles)
 # -------------------------------------------------------------------
+# Modif dans server.py -> Route /stations
 @app.get("/stations")
-def get_stations(
-    q: str = Query(
-        None, description="Recherche partielle de gare ou de ville"
-    ),
-):
+def get_stations(q: str = Query(None, description="Recherche partielle")):
   conn = get_db_connection()
   cursor = conn.cursor()
 
-  if q and q.strip():
-    search_term = f"%{q.strip()}%"
-    query = """
-        SELECT DISTINCT name FROM (
-            SELECT origin_parent_station AS name FROM trips WHERE UPPER(origin_parent_station) LIKE UPPER(?)
-            UNION
-            SELECT destination_parent_station AS name FROM trips WHERE UPPER(destination_parent_station) LIKE UPPER(?)
-            UNION
-            SELECT origin_name AS name FROM trips WHERE UPPER(origin_name) LIKE UPPER(?)
-            UNION
-            SELECT destination_name AS name FROM trips WHERE UPPER(destination_name) LIKE UPPER(?)
-        )
-        ORDER BY name ASC
-        LIMIT 20
-        """
-    cursor.execute(query, (search_term, search_term, search_term, search_term))
-  else:
-    query = """
-        SELECT DISTINCT name FROM (
-            SELECT origin_parent_station AS name FROM trips
-            UNION
-            SELECT destination_parent_station AS name FROM trips
-        )
-        ORDER BY name ASC
-        """
-    cursor.execute(query)
+  if not q or not q.strip():
+    return {"stations": []}
 
-  stations = [row["name"] for row in cursor.fetchall() if row["name"]]
+  search_term = f"%{q.strip()}%"
+
+  # 1. Recherche des VILLES (parent_station)
+  query_cities = """
+        SELECT DISTINCT origin_parent_station AS name 
+        FROM trips 
+        WHERE UPPER(origin_parent_station) LIKE UPPER(?)
+        ORDER BY name ASC
+        LIMIT 5
+    """
+  cursor.execute(query_cities, (search_term,))
+  cities = [
+      {
+          "type": "city",
+          "label": row["name"],
+          "search_val": f"{row['name']} (toutes les gares)",
+      }
+      for row in cursor.fetchall()
+  ]
+
+  # 2. Recherche des GARES PRÉCISES (origin_name)
+  query_stations = """
+        SELECT DISTINCT origin_name AS name, origin_parent_station AS parent 
+        FROM trips 
+        WHERE UPPER(origin_name) LIKE UPPER(?)
+        ORDER BY name ASC
+        LIMIT 10
+    """
+  cursor.execute(query_stations, (search_term,))
+  stations = [
+      {
+          "type": "station",
+          "label": row["name"],
+          "parent": row["parent"],
+          "search_val": row["name"],
+      }
+      for row in cursor.fetchall()
+  ]
+
   conn.close()
 
-  return {"count": len(stations), "stations": stations}
-
+  # On combine : d'abord les Villes, puis les Gares
+  return {"results": cities + stations}
 
 # -------------------------------------------------------------------
 # 2. NETTOYAGE ET DÉDUPLICATION DES CORRESPONDANCES
