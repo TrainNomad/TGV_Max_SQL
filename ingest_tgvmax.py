@@ -75,8 +75,11 @@ print("4. Génération de la base SQLite...")
 conn = sqlite3.connect('tgvmax_compact.db')
 cursor = conn.cursor()
 
+# ⚠️ Supprimer l'ancienne table si elle existe pour forcer le nouveau schéma
+cursor.execute('DROP TABLE IF EXISTS trips;')
+
 cursor.execute('''
-CREATE TABLE IF NOT EXISTS trips (
+CREATE TABLE trips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
     origin_id INTEGER,
@@ -91,13 +94,23 @@ CREATE TABLE IF NOT EXISTS trips (
 );
 ''')
 
-# Indexation sur les villes et sur les gares pour des recherches ultra-rapides
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_parent_search ON trips (date, origin_parent_station, destination_parent_station);')
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_exact_search ON trips (date, origin_name, destination_name);')
+# Insérer les données dans la table propre
+df_trips.to_sql('trips', conn, if_exists='append', index=False)
 
-df_trips.to_sql('trips', conn, if_exists='replace', index=False)
+# Créer les index sur le nouveau schéma
+cursor.execute(
+    'CREATE INDEX IF NOT EXISTS idx_parent_search ON trips (date,'
+    ' origin_parent_station, destination_parent_station);'
+)
+cursor.execute(
+    'CREATE INDEX IF NOT EXISTS idx_exact_search ON trips (date, origin_name,'
+    ' destination_name);'
+)
 
 conn.commit()
 conn.close()
 
-print("Base SQLite mise à jour avec succès avec la colonne parent_station !")
+print(
+    'Base SQLite régénérée avec succès avec les colonnes parent_station et'
+    ' index !'
+)

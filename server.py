@@ -1,12 +1,15 @@
+import sqlite3
+from typing import Any, Dict, List
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-import sqlite3
-from typing import List, Dict, Any
 
 app = FastAPI(
     title="TGV Max Visualizer API",
-    description="API de recherche de billets TGV Max avec calcul de trajets directs et correspondances",
-    version="1.1.0"
+    description=(
+        "API de recherche TGV Max avec support des métropoles et correspondances"
+        " inter-gares."
+    ),
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -19,25 +22,38 @@ app.add_middleware(
 
 DB_PATH = "tgvmax_compact.db"
 
+
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+  conn = sqlite3.connect(DB_PATH)
+  conn.row_factory = sqlite3.Row
+  return conn
+
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "API TGV Max opérationnelle"}
+  return {"status": "ok", "message": "API TGV Max opérationnelle (v2.0)"}
 
+
+# -------------------------------------------------------------------
+# 1. AUTOCOMPLÉTION (Gares précises + Villes Métropoles)
+# -------------------------------------------------------------------
 @app.get("/stations")
-def get_stations(q: str = Query(None, description="Recherche partielle de la gare (autocomplétion)")):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def get_stations(
+    q: str = Query(
+        None, description="Recherche partielle de gare ou de ville"
+    ),
+):
+  conn = get_db_connection()
+  cursor = conn.cursor()
 
-    if q and q.strip():
-        # Si un terme de recherche 'q' est fourni, filtre avec LIKE %q%
-        search_term = f"%{q.strip()}%"
-        query = """
+  if q and q.strip():
+    search_term = f"%{q.strip()}%"
+    query = """
         SELECT DISTINCT name FROM (
+            SELECT origin_parent_station AS name FROM trips WHERE UPPER(origin_parent_station) LIKE UPPER(?)
+            UNION
+            SELECT destination_parent_station AS name FROM trips WHERE UPPER(destination_parent_station) LIKE UPPER(?)
+            UNION
             SELECT origin_name AS name FROM trips WHERE UPPER(origin_name) LIKE UPPER(?)
             UNION
             SELECT destination_name AS name FROM trips WHERE UPPER(destination_name) LIKE UPPER(?)
@@ -45,118 +61,113 @@ def get_stations(q: str = Query(None, description="Recherche partielle de la gar
         ORDER BY name ASC
         LIMIT 20
         """
-        cursor.execute(query, (search_term, search_term))
-    else:
-        # Si aucun paramètre 'q' n'est fourni, renvoie toutes les stations (ou une liste vide selon votre besoin)
-        query = """
+    cursor.execute(query, (search_term, search_term, search_term, search_term))
+  else:
+    query = """
         SELECT DISTINCT name FROM (
-            SELECT origin_name AS name FROM trips
+            SELECT origin_parent_station AS name FROM trips
             UNION
-            SELECT destination_name AS name FROM trips
+            SELECT destination_parent_station AS name FROM trips
         )
         ORDER BY name ASC
         """
-        cursor.execute(query)
+    cursor.execute(query)
 
-    stations = [row["name"] for row in cursor.fetchall()]
-    conn.close()
-    
-    return {"count": len(stations), "stations": stations}
+  stations = [row["name"] for row in cursor.fetchall() if row["name"]]
+  conn.close()
+
+  return {"count": len(stations), "stations": stations}
+
+
 # -------------------------------------------------------------------
-# FONCTION DE DÉDUPLICATION & NETTOYAGE
+# 2. NETTOYAGE ET DÉDUPLICATION DES CORRESPONDANCES
 # -------------------------------------------------------------------
 def cleanup_connections(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # 1. Dédupliquer par clé exacte
-    unique = {}
-    for r in results:
-        key = f"{r['train1_no']}|{r['transfer_station']}|{r['train2_no']}"
-        if key not in unique:
-            unique[key] = r
+  unique = {}
+  for r in results:
+    key = f"{r['train1_no']}|{r['transfer_station_arr']}|{r['transfer_station_dep']}|{r['train2_no']}"
+    if key not in unique:
+      unique[key] = r
 
-    # 2. Regrouper par paire de trains (train1 + train2)
-    par_trains = {}
-    for r in unique.values():
-        train_key = f"{r['train1_no']}_{r['train2_no']}"
-        if train_key not in par_trains:
-            par_trains[train_key] = []
-        par_trains[train_key].append(r)
+  par_trains = {}
+  for r in unique.values():
+    train_key = f"{r['train1_no']}_{r['train2_no']}"
+    if train_key not in par_trains:
+      par_trains[train_key] = []
+    par_trains[train_key].append(r)
 
-    # 3. Conserver l'alternative optimale
-    final = []
-    gares_bizarres = ['AEROPORT', 'CDG', 'MASSY', 'MARNE', 'LYON']
+  final = []
+  for alts in par_trains.values():
+    # Filtre de viabilité
+    valides = [a for a in alts if a["is_valid_layover"]]
+    if valides:
+      final.append(valides[0])
+    else:
+      final.append(alts[0])
 
-    for alts in par_trains.values():
-        # Filtre sur le temps d'escale viable (15 à 120 minutes)
-        valides = [a for a in alts if 15 <= a['layover_minutes'] <= 120]
-        if not valides:
-            final.append(alts[0])
-            continue
+  final.sort(key=lambda x: (x["train1_dep"], x["layover_minutes"]))
+  return final
 
-        # Priorise les gares classiques si alternatives
-        non_bizarres = [
-            a for a in valides 
-            if not any(g in a['transfer_station'].upper() for g in gares_bizarres)
-        ]
-
-        if non_bizarres:
-            final.append(non_bizarres[0])
-        else:
-            final.append(valides[0])
-
-    # 4. Tri par heure de départ du 1er train puis durée totale
-    final.sort(key=lambda x: (x['train1_dep'], x['layover_minutes']))
-    return final
 
 # -------------------------------------------------------------------
-# ROUTE GLOBALE DE RECHERCHE (Directs + Correspondances dédupliqués)
+# 3. ROUTE PRINCIPALE DE RECHERCHE
 # -------------------------------------------------------------------
 @app.get("/search")
 def search_all(
-    origin: str = Query(..., description="Gare de départ"),
-    destination: str = Query(..., description="Gare d'arrivée"),
+    origin: str = Query(..., description="Gare ou Ville de départ"),
+    destination: str = Query(..., description="Gare ou Ville d'arrivée"),
     date: str = Query(..., description="Date au format YYYY-MM-DD"),
-    min_layover_mins: int = Query(15, description="Temps d'escale minimum"),
-    max_layover_mins: int = Query(120, description="Temps d'escale maximum")
 ):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  orig_term = f"%{origin.strip()}%"
+  dest_term = f"%{destination.strip()}%"
 
-    # 1. Requête Directs
-    query_direct = """
-    SELECT date, origin_name AS orig, destination_name AS dest, 
-           departure_time AS train1_dep, arrival_time AS train1_arr, train_no AS train1_no
+  # --- A. TRAJETS DIRECTS ---
+  query_direct = """
+    SELECT 
+        date, 
+        origin_name AS orig, 
+        destination_name AS dest, 
+        departure_time AS train1_dep, 
+        arrival_time AS train1_arr, 
+        train_no AS train1_no
     FROM trips
-    WHERE UPPER(origin_name) LIKE UPPER(?)
-      AND UPPER(destination_name) LIKE UPPER(?)
+    WHERE (UPPER(origin_name) LIKE UPPER(?) OR UPPER(origin_parent_station) LIKE UPPER(?))
+      AND (UPPER(destination_name) LIKE UPPER(?) OR UPPER(destination_parent_station) LIKE UPPER(?))
       AND date = ?
     ORDER BY departure_time ASC
     """
-    cursor.execute(query_direct, (f"%{origin.strip()}%", f"%{destination.strip()}%", date.strip()))
-    direct_rows = [dict(row) for row in cursor.fetchall()]
+  cursor.execute(
+      query_direct, (orig_term, orig_term, dest_term, dest_term, date.strip())
+  )
+  direct_rows = [dict(row) for row in cursor.fetchall()]
 
-    # Formatage des trajets directs pour l'unification
-    direct_results = []
-    for d in direct_rows:
-        direct_results.append({
-            "is_direct": True,
-            "orig": d["orig"],
-            "dest": d["dest"],
-            "date": d["date"],
-            "train1_no": d["train1_no"],
-            "train1_dep": d["train1_dep"],
-            "train1_arr": d["train1_arr"],
-            "transfer_station": None,
-            "train2_no": None,
-            "train2_dep": None,
-            "train2_arr": None,
-            "layover_minutes": 0
-        })
+  direct_results = []
+  for d in direct_rows:
+    direct_results.append({
+        "is_direct": True,
+        "orig": d["orig"],
+        "dest": d["dest"],
+        "date": d["date"],
+        "train1_no": d["train1_no"],
+        "train1_dep": d["train1_dep"],
+        "train1_arr": d["train1_arr"],
+        "transfer_station_arr": None,
+        "transfer_station_dep": None,
+        "train2_no": None,
+        "train2_dep": None,
+        "train2_arr": None,
+        "layover_minutes": 0,
+        "is_valid_layover": True,
+    })
 
-    # 2. Requête Correspondances
-    query_connections = """
+  # --- B. CORRESPONDANCES (Même gare OU changement de gare dans même ville) ---
+  query_connections = """
     SELECT 
         t1.origin_name AS orig,
-        t1.destination_name AS transfer_station,
+        t1.destination_name AS transfer_station_arr,
+        t2.origin_name AS transfer_station_dep,
         t2.destination_name AS dest,
         t1.date AS date,
         t1.train_no AS train1_no,
@@ -171,35 +182,44 @@ def search_all(
         ) / 60 AS INTEGER) AS layover_minutes
     FROM trips t1
     JOIN trips t2 
-      ON UPPER(t1.destination_name) = UPPER(t2.origin_name) 
+      ON UPPER(t1.destination_parent_station) = UPPER(t2.origin_parent_station)
      AND t1.date = t2.date
-    WHERE UPPER(t1.origin_name) LIKE UPPER(?)
-      AND UPPER(t2.destination_name) LIKE UPPER(?)
+    WHERE (UPPER(t1.origin_name) LIKE UPPER(?) OR UPPER(t1.origin_parent_station) LIKE UPPER(?))
+      AND (UPPER(t2.destination_name) LIKE UPPER(?) OR UPPER(t2.destination_parent_station) LIKE UPPER(?))
       AND t1.date = ?
-      AND DATETIME(t2.date || ' ' || t2.departure_time) >= DATETIME(t1.date || ' ' || t1.arrival_time, '+' || ? || ' minutes')
-      AND DATETIME(t2.date || ' ' || t2.departure_time) <= DATETIME(t1.date || ' ' || t1.arrival_time, '+' || ? || ' minutes')
+      -- Filtre global de sécurité minimale (au moins 15 min dans tous les cas)
+      AND DATETIME(t2.date || ' ' || t2.departure_time) >= DATETIME(t1.date || ' ' || t1.arrival_time, '+15 minutes')
+      -- Max 3h d'escale
+      AND DATETIME(t2.date || ' ' || t2.departure_time) <= DATETIME(t1.date || ' ' || t1.arrival_time, '+180 minutes')
     """
-    cursor.execute(query_connections, (
-        f"%{origin.strip()}%", 
-        f"%{destination.strip()}%", 
-        date.strip(),
-        str(min_layover_mins),
-        str(max_layover_mins)
-    ))
-    conn_rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+  cursor.execute(
+      query_connections,
+      (orig_term, orig_term, dest_term, dest_term, date.strip()),
+  )
+  conn_rows = [dict(row) for row in cursor.fetchall()]
+  conn.close()
 
-    # Traitement des correspondances avec le filtre de déduplication
-    for c in conn_rows:
-        c["is_direct"] = False
+  # Évaluation dynamique du délai de correspondance
+  valid_connections = []
+  for c in conn_rows:
+    c["is_direct"] = False
+    is_same_station = c["transfer_station_arr"] == c["transfer_station_dep"]
+    layover = c["layover_minutes"]
 
-    cleaned_connections = cleanup_connections(conn_rows)
+    if is_same_station:
+      # Même quai/gare : entre 15 et 120 min
+      c["is_valid_layover"] = 15 <= layover <= 120
+    else:
+      # Changement de gare (ex: Montparnasse -> Gare de Lyon) : au moins 60 min jusqu'à 180 min
+      c["is_valid_layover"] = 60 <= layover <= 180
 
-    # Fusion des trajets directs et des correspondances nettoyées (Max 20 résultats)
-    all_results = direct_results + cleaned_connections
-    all_results.sort(key=lambda x: x["train1_dep"])
+    if c["is_valid_layover"]:
+      valid_connections.append(c)
 
-    return {
-        "count": len(all_results),
-        "results": all_results[:20]
-    }
+  cleaned_connections = cleanup_connections(valid_connections)
+
+  # --- C. FUSION ET TRI FINAL ---
+  all_results = direct_results + cleaned_connections
+  all_results.sort(key=lambda x: x["train1_dep"])
+
+  return {"count": len(all_results), "results": all_results[:30]}
