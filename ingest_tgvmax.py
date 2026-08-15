@@ -6,6 +6,9 @@ import requests
 print("1. Chargement des gares depuis stations.csv...")
 df_stations = pd.read_csv('stations.csv', sep=';', low_memory=False)
 
+# Nettoyage des valeurs manquantes sur la colonne 'name'
+df_stations['name'] = df_stations['name'].fillna('Gare Inconnue')
+
 # Mappage id -> name pour trouver le nom de la gare parente
 id_to_name = df_stations.set_index('id')['name'].to_dict()
 
@@ -18,12 +21,42 @@ df_stations['latitude'] = pd.to_numeric(df_stations['latitude'], errors='coerce'
 df_stations['longitude'] = pd.to_numeric(df_stations['longitude'], errors='coerce').fillna(0.0)
 
 # Dictionnaire de correspondance IATA -> ID de station
-df_stations_clean = df_stations.dropna(subset=['sncf_id']).copy()
+df_stations_clean = df_stations.dropna(subset=['sncf_id', 'id']).copy()
 iata_to_id = {}
 for _, row in df_stations_clean.iterrows():
     iata_code = str(row['sncf_id']).strip().upper()
     iata_to_id[iata_code] = int(row['id'])
 
+# ... (Téléchargement et préparation des trajets identiques) ...
+
+# 4. Génération de la base SQLite
+print("4. Génération de la base SQLite...")
+conn = sqlite3.connect('tgvmax_compact.db')
+cursor = conn.cursor()
+
+cursor.execute('PRAGMA journal_mode = WAL;')
+cursor.execute('PRAGMA synchronous = NORMAL;')
+
+# Reconstitution de la table des gares
+cursor.execute('DROP TABLE IF EXISTS stations;')
+cursor.execute('''
+CREATE TABLE stations (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_station TEXT NOT NULL,
+    latitude REAL,
+    longitude REAL
+);
+''')
+
+# Préparation du DataFrame d'insertion
+df_stations_to_db = (
+    df_stations[['id', 'name', 'parent_station', 'latitude', 'longitude']]
+    .dropna(subset=['id', 'name'])
+    .drop_duplicates(subset=['id'])
+)
+
+df_stations_to_db.to_sql('stations', conn, if_exists='append', index=False)
 # 2. Téléchargement des trajets TGV Max
 DATA_URL = "https://ressources.data.sncf.com/api/explore/v2.1/catalog/datasets/tgvmax/exports/json?lang=fr&timezone=Europe%2FBerlin"
 print("2. Téléchargement des données TGV Max...")
