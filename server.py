@@ -176,7 +176,8 @@ def search_all(
             origin_lat, origin_lon, dest_lat, dest_lon,
             departure_time AS train1_dep, 
             arrival_time AS train1_arr, 
-            train_no AS train1_no
+            train_no AS train1_no,
+            type AS train1_type
         FROM trips
         WHERE date = ?
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
@@ -198,11 +199,13 @@ def search_all(
                 "dest_lon": d["dest_lon"],
                 "date": d["date"],
                 "train1_no": d["train1_no"],
+                "train1_type": d["train1_type"],
                 "train1_dep": d["train1_dep"],
                 "train1_arr": d["train1_arr"],
                 "transfer_station_arr": None,
                 "transfer_station_dep": None,
                 "train2_no": None,
+                "train2_type": None,
                 "train2_dep": None,
                 "train2_arr": None,
                 "layover_minutes": 0,
@@ -211,7 +214,7 @@ def search_all(
             for d in direct_rows
         ]
 
-        # 2. TRAJETS AVEC 1 CORRESPONDANCE (Calculé sur les colonnes en minutes dep_min / arr_min)
+        # 2. TRAJETS AVEC 1 CORRESPONDANCE
         query_connections = """
         SELECT 
             t1.origin_name AS orig,
@@ -223,9 +226,11 @@ def search_all(
             t2.dest_lat AS dest_lat, t2.dest_lon AS dest_lon,
             t1.date AS date,
             t1.train_no AS train1_no,
+            t1.type AS train1_type,
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t2.train_no AS train2_no,
+            t2.type AS train2_type,
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
@@ -264,7 +269,6 @@ def search_all(
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=f"Erreur recherche: {str(e)}")
-
 
 # -------------------------------------------------------------------
 # 5. EXPLORER - DESTINATIONS ACCESSIBLES DEPUIS UNE GARE
