@@ -1,5 +1,3 @@
-import os
-import gc
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -9,9 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="TGV Max Visualizer API",
     description="API TGV Max ultra-rapide optimisée pour les recherches directes et correspondances.",
-    version="3.1.0",
+    version="3.0.0",
 )
 
+# Configuration CORS pour autoriser l'accès depuis n'importe quelle application frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,23 +21,21 @@ app.add_middleware(
 
 DB_PATH = "tgvmax_compact.db"
 
-# def get_db_connection():
-#     """Établit une connexion SQLite optimisée"""
-#     conn = sqlite3.connect(DB_PATH)
-#     conn.row_factory = sqlite3.Row
-    
-#     conn.execute("PRAGMA journal_mode=WAL;")
-#     conn.execute("PRAGMA synchronous=NORMAL;")
-#     # Cache SQLite ajusté à 32 Mo (~32000 pages de 1 Ko)
-#     conn.execute("PRAGMA cache_size=-32000;")
-#     conn.execute("PRAGMA temp_store=MEMORY;")
-#     conn.execute("PRAGMA mmap_size=268435456;") # 256 Mo via disque
-#     return conn
+def get_db_connection():
+    """Établit une connexion SQLite optimisée"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    # Optimisations de mémoire et de lecture en mode WAL
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA cache_size=-64000;")
+    conn.execute("PRAGMA temp_store=MEMORY;")
+    return conn
 
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "API TGV Max opérationnelle (v3.1)"}
+    return {"status": "ok", "message": "API TGV Max opérationnelle (v3.0)"}
 
 
 # -------------------------------------------------------------------
@@ -46,13 +43,16 @@ def read_root():
 # -------------------------------------------------------------------
 @app.get("/health")
 def health_check():
+    """
+    Sert à vérifier l'état du serveur et la disponibilité de la base SQLite.
+    Utile pour Docker, Render, Fly.io, Vercel ou des outils de monitoring.
+    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM trips;")
         count = cursor.fetchone()[0]
         conn.close()
-        gc.collect()
         return {
             "status": "healthy",
             "database": DB_PATH,
@@ -67,6 +67,7 @@ def health_check():
 # -------------------------------------------------------------------
 @app.get("/stations")
 def get_stations(q: str = Query(None, description="Recherche partielle de gare ou ville")):
+    """Retourne la liste des métropoles et gares correspondant au terme tapé"""
     if not q or not q.strip():
         return {"results": []}
 
@@ -75,6 +76,7 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
     search_pattern = q.strip().upper() + "%"
 
     try:
+        # Recherche par métropole (parent station)
         query_cities = """
             SELECT DISTINCT origin_parent_name AS name, origin_parent_id AS id 
             FROM trips 
@@ -93,6 +95,7 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
             for row in cursor.fetchall()
         ]
 
+        # Recherche par gare spécifique
         query_stations = """
             SELECT DISTINCT origin_name AS name, origin_parent_name AS parent, origin_id AS id 
             FROM trips 
@@ -113,12 +116,10 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
         ]
 
         conn.close()
-        gc.collect()
         return {"results": cities + stations}
 
     except Exception as e:
         conn.close()
-        gc.collect()
         raise HTTPException(status_code=500, detail=f"Erreur autocomplétion: {str(e)}")
 
 
@@ -126,6 +127,7 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
 # 3. DÉDUPLICATION DES CORRESPONDANCES
 # -------------------------------------------------------------------
 def cleanup_connections(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Supprime les doublons inutiles entre deux trains identiques"""
     unique = {}
     for r in results:
         key = f"{r['train1_no']}|{r['transfer_station_arr']}|{r['transfer_station_dep']}|{r['train2_no']}"
@@ -148,7 +150,7 @@ def cleanup_connections(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # -------------------------------------------------------------------
-# 4. RECHERCHE TRAJET (A -> B)
+# 4. RECHERCHE TRAJET (A -> B) - DIRECTS ET CORRESPONDANCES
 # -------------------------------------------------------------------
 @app.get("/search")
 def search_all(
@@ -156,6 +158,7 @@ def search_all(
     destination: str = Query(..., description="Gare ou Ville d'arrivée"),
     date: str = Query(..., description="Date au format YYYY-MM-DD"),
 ):
+    """Recherche des trajets directs et avec 1 correspondance à une date donnée"""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -164,7 +167,7 @@ def search_all(
         dest_clean = destination.strip().upper()
         date_clean = date.strip()
 
-        # Directs
+        # 1. TRAJETS DIRECTS
         query_direct = """
         SELECT 
             date, 
@@ -173,8 +176,7 @@ def search_all(
             origin_lat, origin_lon, dest_lat, dest_lon,
             departure_time AS train1_dep, 
             arrival_time AS train1_arr, 
-            train_no AS train1_no,
-            type AS train1_type
+            train_no AS train1_no
         FROM trips
         WHERE date = ?
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
@@ -196,13 +198,11 @@ def search_all(
                 "dest_lon": d["dest_lon"],
                 "date": d["date"],
                 "train1_no": d["train1_no"],
-                "train1_type": d["train1_type"],
                 "train1_dep": d["train1_dep"],
                 "train1_arr": d["train1_arr"],
                 "transfer_station_arr": None,
                 "transfer_station_dep": None,
                 "train2_no": None,
-                "train2_type": None,
                 "train2_dep": None,
                 "train2_arr": None,
                 "layover_minutes": 0,
@@ -211,7 +211,7 @@ def search_all(
             for d in direct_rows
         ]
 
-        # Correspondances
+        # 2. TRAJETS AVEC 1 CORRESPONDANCE (Calculé sur les colonnes en minutes dep_min / arr_min)
         query_connections = """
         SELECT 
             t1.origin_name AS orig,
@@ -223,11 +223,9 @@ def search_all(
             t2.dest_lat AS dest_lat, t2.dest_lon AS dest_lon,
             t1.date AS date,
             t1.train_no AS train1_no,
-            t1.type AS train1_type,
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t2.train_no AS train2_no,
-            t2.type AS train2_type,
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
@@ -261,17 +259,15 @@ def search_all(
         all_results.sort(key=lambda x: x["train1_dep"])
 
         conn.close()
-        gc.collect()
-        return {"count": len(all_results), "results": all_results[:50]}
+        return {"count": len(all_results), "results": all_results[:30]}
 
     except Exception as e:
         conn.close()
-        gc.collect()
         raise HTTPException(status_code=500, detail=f"Erreur recherche: {str(e)}")
 
 
 # -------------------------------------------------------------------
-# 5. EXPLORER
+# 5. EXPLORER - DESTINATIONS ACCESSIBLES DEPUIS UNE GARE
 # -------------------------------------------------------------------
 @app.get("/explorer")
 def explore_destinations(
@@ -279,6 +275,7 @@ def explore_destinations(
     origin: Optional[str] = Query(None, description="Alternative au paramètre 'from'"),
     date: str = Query(..., description="Date au format YYYY-MM-DD"),
 ):
+    """Calcule toutes les villes/destinations atteignables en direct ou 1 correspondance"""
     departure_query = from_station or origin
     if not departure_query:
         raise HTTPException(status_code=400, detail="Paramètre 'from' ou 'origin' requis")
@@ -292,7 +289,7 @@ def explore_destinations(
 
         best_journeys = {}
 
-        # Trajets directs
+        # 1. Trajets directs
         query_direct = """
         SELECT 
             destination_name AS to_name,
@@ -301,14 +298,13 @@ def explore_destinations(
             departure_time AS dep_str,
             arrival_time AS arr_str,
             dep_min, arr_min,
-            train_no,
-            type AS train_type
+            train_no
         FROM trips
         WHERE date = ? 
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
           AND UPPER(destination_parent_name) != ?
         ORDER BY dep_min ASC
-        LIMIT 250
+        LIMIT 500
         """
         cursor.execute(query_direct, (date_clean, station, station, station))
         
@@ -332,7 +328,6 @@ def explore_destinations(
                     "dep_str": row["dep_str"],
                     "arr_str": row["arr_str"],
                     "train_no": row["train_no"],
-                    "train_type": row["train_type"],
                     "lat": row["dest_lat"],
                     "lon": row["dest_lon"],
                 }],
@@ -341,13 +336,12 @@ def explore_destinations(
             if dest_id not in best_journeys or duration_min < best_journeys[dest_id]["duration"]:
                 best_journeys[dest_id] = journey
 
-        # Trajets avec correspondance
+        # 2. Trajets avec 1 correspondance
         query_transfers = """
         SELECT 
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t1.train_no AS train1_no,
-            t1.type AS train1_type,
             t1.destination_name AS transfer_arr,
             t2.origin_name AS transfer_dep,
             t2.destination_name AS to_name,
@@ -356,7 +350,6 @@ def explore_destinations(
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             t2.train_no AS train2_no,
-            t2.type AS train2_type,
             t1.dep_min AS start_dep,
             t2.arr_min AS end_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
@@ -370,7 +363,7 @@ def explore_destinations(
           AND t2.dep_min >= (t1.arr_min + 15)
           AND t2.dep_min <= (t1.arr_min + 180)
         ORDER BY t1.dep_min ASC
-        LIMIT 250
+        LIMIT 500
         """
         cursor.execute(query_transfers, (date_clean, station, station, station))
 
@@ -402,7 +395,6 @@ def explore_destinations(
                         "dep_str": row["train1_dep"],
                         "arr_str": row["train1_arr"],
                         "train_no": row["train1_no"],
-                        "train_type": row["train1_type"],
                         "lat": None,
                         "lon": None,
                     },
@@ -413,7 +405,6 @@ def explore_destinations(
                         "dep_str": row["train2_dep"],
                         "arr_str": row["train2_arr"],
                         "train_no": row["train2_no"],
-                        "train_type": row["train2_type"],
                         "lat": row["dest_lat"],
                         "lon": row["dest_lon"],
                     },
@@ -429,10 +420,8 @@ def explore_destinations(
         journeys.sort(key=lambda x: (x["transfers"], x["duration"]))
 
         conn.close()
-        gc.collect()
         return {"journeys": journeys, "count": len(journeys)}
 
     except Exception as e:
         conn.close()
-        gc.collect()
         raise HTTPException(status_code=500, detail=f"Erreur explorer: {str(e)}")
