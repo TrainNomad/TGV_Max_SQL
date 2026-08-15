@@ -1,16 +1,6 @@
-import os
 import sqlite3
 import pandas as pd
 import requests
-
-# Helper pour déterminer le type de train selon l'axe
-def detect_train_type(item):
-    axe = str(item.get('axe', '')).upper().strip()
-    if axe.startswith("OUIGO"):
-        return "OUIGO"
-    if axe.startswith("IC"):
-        return "INTERCITÉS"
-    return "TGV INOUI"
 
 # 1. Chargement et résolution des gares
 print("1. Chargement des gares...")
@@ -20,9 +10,11 @@ df_stations['name'] = df_stations['name'].fillna('Gare Inconnue')
 df_stations['latitude'] = pd.to_numeric(df_stations['latitude'], errors='coerce').fillna(0.0)
 df_stations['longitude'] = pd.to_numeric(df_stations['longitude'], errors='coerce').fillna(0.0)
 
+# Mappages rapides via dictionnaires Python (beaucoup plus rapide que Pandas)
 id_to_name = df_stations.set_index('id')['name'].to_dict()
 id_to_parent_id = df_stations.set_index('id')['parent_station_id'].to_dict()
 
+# Mappage pour trouver le vrai parent_id (si NaN, la station est son propre parent)
 def resolve_parent_id(s_id):
     p_id = id_to_parent_id.get(s_id)
     if pd.isna(p_id) or not p_id:
@@ -35,9 +27,11 @@ id_to_parent_name = {s_id: id_to_name.get(p_id, id_to_name.get(s_id)) for s_id, 
 id_to_lat = df_stations.set_index('id')['latitude'].to_dict()
 id_to_lon = df_stations.set_index('id')['longitude'].to_dict()
 
+# Conversion IATA -> ID
 df_stations_clean = df_stations.dropna(subset=['sncf_id', 'id']).copy()
 iata_to_id = {str(row['sncf_id']).strip().upper(): int(row['id']) for _, row in df_stations_clean.iterrows()}
 
+# Helper conversion heure HH:MM -> minutes
 def time_to_minutes(t_str):
     if not t_str or ':' not in t_str:
         return 0
@@ -92,18 +86,14 @@ for item in raw_data:
         'arrival_time': arr_time,
         'dep_min': time_to_minutes(dep_time),
         'arr_min': time_to_minutes(arr_time),
-        'train_no': item.get('train_no'),
-        'type': detect_train_type(item)  # Ajout de la colonne type
+        'train_no': item.get('train_no')
     })
 
 df_trips = pd.DataFrame(records)
 
-# 4. Enregistrement SQLite (Chemin absolu pour éviter l'erreur SQLITE_CANTOPEN)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(BASE_DIR, 'tgvmax_compact.db')
-
-print(f"4. Écriture dans SQLite ({db_path})...")
-conn = sqlite3.connect(db_path)
+# 4. Enregistrement SQLite
+print("4. Écriture dans SQLite...")
+conn = sqlite3.connect('tgvmax_compact.db')
 cursor = conn.cursor()
 
 cursor.execute('PRAGMA journal_mode = WAL;')
@@ -130,8 +120,7 @@ CREATE TABLE trips (
     arrival_time TEXT NOT NULL,
     dep_min INTEGER NOT NULL,
     arr_min INTEGER NOT NULL,
-    train_no TEXT,
-    type TEXT NOT NULL
+    train_no TEXT
 );
 ''')
 
