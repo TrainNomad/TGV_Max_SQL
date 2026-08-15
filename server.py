@@ -24,6 +24,10 @@ DB_PATH = "tgvmax_compact.db"
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Optimisations de performance pour SQLite
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
+    conn.execute("PRAGMA cache_size = -64000;") # Allocation de 64 Mo de cache RAM
     return conn
 
 
