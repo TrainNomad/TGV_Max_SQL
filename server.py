@@ -245,6 +245,7 @@ def explore_destinations(
     upper_stations = [s.upper() for s in stations]
 
     # --- 1. RECHERCHE TRAJETS DIRECTS ---
+    # Exclusion des arrivées renvoyant vers la même gare ou même métropole
     query_direct = f"""
         SELECT 
             origin_name AS from_name,
@@ -258,12 +259,15 @@ def explore_destinations(
         FROM trips
         WHERE date = ? 
           AND (UPPER(origin_name) IN ({placeholders}) OR UPPER(origin_parent_station) IN ({placeholders}))
+          AND UPPER(destination_name) NOT IN ({placeholders})
+          AND UPPER(destination_parent_station) NOT IN ({placeholders})
     """
-    params_direct = [date.strip()] + upper_stations + upper_stations
+    params_direct = [date.strip()] + upper_stations + upper_stations + upper_stations + upper_stations
     cursor.execute(query_direct, params_direct)
     direct_rows = cursor.fetchall()
 
     # --- 2. RECHERCHE TRAJETS AVEC 1 CORRESPONDANCE ---
+    # Exclusion des destinations qui ramènent au point de départ d'origine
     query_transfers = f"""
         SELECT 
             t1.origin_name AS from_name,
@@ -289,18 +293,19 @@ def explore_destinations(
          AND t1.date = t2.date
         WHERE t1.date = ?
           AND (UPPER(t1.origin_name) IN ({placeholders}) OR UPPER(t1.origin_parent_station) IN ({placeholders}))
+          AND UPPER(t2.destination_name) NOT IN ({placeholders})
+          AND UPPER(t2.destination_parent_station) NOT IN ({placeholders})
           AND DATETIME(t2.date || ' ' || t2.departure_time) >= DATETIME(t1.date || ' ' || t1.arrival_time, '+15 minutes')
           AND DATETIME(t2.date || ' ' || t2.departure_time) <= DATETIME(t1.date || ' ' || t1.arrival_time, '+180 minutes')
     """
-    params_transfers = [date.strip()] + upper_stations + upper_stations
+    params_transfers = [date.strip()] + upper_stations + upper_stations + upper_stations + upper_stations
     cursor.execute(query_transfers, params_transfers)
     transfer_rows = cursor.fetchall()
     conn.close()
 
-    # Dictionnaire temporaire pour regrouper par destination finale et ne garder que le meilleur itinéraire
     best_journeys = {}
 
-    # Traitement des trajets directs (0 correspondance)
+    # Traitement des trajets directs
     for row in direct_rows:
         dest_id = row["to_id"]
         dep_str = row["dep_str"]
@@ -334,7 +339,6 @@ def explore_destinations(
             }],
         }
 
-        # S'il n'existe pas ou si ce trajet direct démarre plus tôt / est plus court, on le conserve
         if dest_id not in best_journeys or duration_min < best_journeys[dest_id]["duration"]:
             best_journeys[dest_id] = journey
 
@@ -344,7 +348,6 @@ def explore_destinations(
         is_same_station = row["transfer_arr"] == row["transfer_dep"]
         layover = row["layover_minutes"]
 
-        # Validation de la durée d'escale selon la gare de correspondance
         is_valid_layover = (15 <= layover <= 120) if is_same_station else (60 <= layover <= 180)
         if not is_valid_layover:
             continue
@@ -392,15 +395,12 @@ def explore_destinations(
             ],
         }
 
-        # On n'ajoute la correspondance que si :
-        # - La destination n'a encore aucun trajet répertorié.
-        # - Le trajet existant est déjà avec correspondance mais celui-ci est plus rapide.
         if dest_id not in best_journeys:
             best_journeys[dest_id] = journey
         elif best_journeys[dest_id]["transfers"] == 1 and duration_min < best_journeys[dest_id]["duration"]:
             best_journeys[dest_id] = journey
 
     journeys = list(best_journeys.values())
-    journeys.sort(key=lambda x: (x["transfers"], x["dep_str"]))
+    journeys.sort(key=lambda x: (x["transfers"], x["duration"]))
 
     return {"journeys": journeys}

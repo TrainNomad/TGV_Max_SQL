@@ -119,9 +119,20 @@ CREATE TABLE trips (
 # Insérer les données dans la table
 df_trips.to_sql('trips', conn, if_exists='append', index=False)
 
-# Créer les index
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_parent_search ON trips (date, origin_parent_station, destination_parent_station);')
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_exact_search ON trips (date, origin_name, destination_name);')
+cursor.execute('DROP INDEX IF EXISTS idx_parent_search;')
+cursor.execute('DROP INDEX IF EXISTS idx_exact_search;')
+
+# Index 1 : Trajets directs (Recherche instantanée par Date + Gare de départ)
+cursor.execute('''
+CREATE INDEX IF NOT EXISTS idx_direct_search 
+ON trips (date, origin_parent_station, origin_name);
+''')
+
+# Index 2 : Correspondances (Jointure rapide Date + Gare de correspondance)
+cursor.execute('''
+CREATE INDEX IF NOT EXISTS idx_transfer_search 
+ON trips (date, origin_parent_station, departure_time);
+''')
 
 conn.commit()
 conn.close()
