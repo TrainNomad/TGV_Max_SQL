@@ -12,7 +12,6 @@ app = FastAPI(
     version="3.1.0",
 )
 
-# Configuration CORS pour autoriser l'accès depuis n'importe quelle application frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,18 +22,18 @@ app.add_middleware(
 
 DB_PATH = "tgvmax_compact.db"
 
-def get_db_connection():
-    """Établit une connexion SQLite optimisée et ultra-économe en RAM"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+# def get_db_connection():
+#     """Établit une connexion SQLite optimisée"""
+#     conn = sqlite3.connect(DB_PATH)
+#     conn.row_factory = sqlite3.Row
     
-    # Pragmas SQLite optimisés pour contraintes mémoire (< 512 Mo)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA cache_size=-16000;")  # Limite le cache SQLite à ~16 Mo
-    conn.execute("PRAGMA temp_store=MEMORY;")
-    conn.execute("PRAGMA mmap_size=268435456;") # 256 Mo mmap (lecture directe disque)
-    return conn
+#     conn.execute("PRAGMA journal_mode=WAL;")
+#     conn.execute("PRAGMA synchronous=NORMAL;")
+#     # Cache SQLite ajusté à 32 Mo (~32000 pages de 1 Ko)
+#     conn.execute("PRAGMA cache_size=-32000;")
+#     conn.execute("PRAGMA temp_store=MEMORY;")
+#     conn.execute("PRAGMA mmap_size=268435456;") # 256 Mo via disque
+#     return conn
 
 
 @app.get("/")
@@ -47,9 +46,6 @@ def read_root():
 # -------------------------------------------------------------------
 @app.get("/health")
 def health_check():
-    """
-    Vérifie l'état du serveur et la disponibilité de la base SQLite.
-    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -71,7 +67,6 @@ def health_check():
 # -------------------------------------------------------------------
 @app.get("/stations")
 def get_stations(q: str = Query(None, description="Recherche partielle de gare ou ville")):
-    """Retourne la liste des métropoles et gares correspondant au terme tapé"""
     if not q or not q.strip():
         return {"results": []}
 
@@ -80,7 +75,6 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
     search_pattern = q.strip().upper() + "%"
 
     try:
-        # Recherche par métropole (parent station)
         query_cities = """
             SELECT DISTINCT origin_parent_name AS name, origin_parent_id AS id 
             FROM trips 
@@ -99,7 +93,6 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
             for row in cursor.fetchall()
         ]
 
-        # Recherche par gare spécifique
         query_stations = """
             SELECT DISTINCT origin_name AS name, origin_parent_name AS parent, origin_id AS id 
             FROM trips 
@@ -133,7 +126,6 @@ def get_stations(q: str = Query(None, description="Recherche partielle de gare o
 # 3. DÉDUPLICATION DES CORRESPONDANCES
 # -------------------------------------------------------------------
 def cleanup_connections(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Supprime les doublons inutiles entre deux trains identiques"""
     unique = {}
     for r in results:
         key = f"{r['train1_no']}|{r['transfer_station_arr']}|{r['transfer_station_dep']}|{r['train2_no']}"
@@ -156,7 +148,7 @@ def cleanup_connections(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # -------------------------------------------------------------------
-# 4. RECHERCHE TRAJET (A -> B) - DIRECTS ET CORRESPONDANCES
+# 4. RECHERCHE TRAJET (A -> B)
 # -------------------------------------------------------------------
 @app.get("/search")
 def search_all(
@@ -164,7 +156,6 @@ def search_all(
     destination: str = Query(..., description="Gare ou Ville d'arrivée"),
     date: str = Query(..., description="Date au format YYYY-MM-DD"),
 ):
-    """Recherche des trajets directs et avec 1 correspondance à une date donnée"""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -173,7 +164,7 @@ def search_all(
         dest_clean = destination.strip().upper()
         date_clean = date.strip()
 
-        # 1. TRAJETS DIRECTS (avec récupération du champ `type`)
+        # Directs
         query_direct = """
         SELECT 
             date, 
@@ -189,7 +180,7 @@ def search_all(
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
           AND (UPPER(destination_name) = ? OR UPPER(destination_parent_name) = ?)
         ORDER BY dep_min ASC
-        LIMIT 30
+        LIMIT 50
         """
         cursor.execute(query_direct, (date_clean, origin_clean, origin_clean, dest_clean, dest_clean))
         direct_rows = cursor.fetchall()
@@ -220,7 +211,7 @@ def search_all(
             for d in direct_rows
         ]
 
-        # 2. TRAJETS AVEC 1 CORRESPONDANCE (avec récupération de `train1_type` et `train2_type`)
+        # Correspondances
         query_connections = """
         SELECT 
             t1.origin_name AS orig,
@@ -250,7 +241,7 @@ def search_all(
           AND t2.dep_min >= (t1.arr_min + 15)
           AND t2.dep_min <= (t1.arr_min + 180)
         ORDER BY t1.dep_min ASC
-        LIMIT 50
+        LIMIT 100
         """
         cursor.execute(query_connections, (date_clean, origin_clean, origin_clean, dest_clean, dest_clean))
         conn_rows = [dict(row) for row in cursor.fetchall()]
@@ -271,7 +262,7 @@ def search_all(
 
         conn.close()
         gc.collect()
-        return {"count": len(all_results), "results": all_results[:30]}
+        return {"count": len(all_results), "results": all_results[:50]}
 
     except Exception as e:
         conn.close()
@@ -280,7 +271,7 @@ def search_all(
 
 
 # -------------------------------------------------------------------
-# 5. EXPLORER - DESTINATIONS ACCESSIBLES DEPUIS UNE GARE
+# 5. EXPLORER
 # -------------------------------------------------------------------
 @app.get("/explorer")
 def explore_destinations(
@@ -288,7 +279,6 @@ def explore_destinations(
     origin: Optional[str] = Query(None, description="Alternative au paramètre 'from'"),
     date: str = Query(..., description="Date au format YYYY-MM-DD"),
 ):
-    """Calcule toutes les villes/destinations atteignables en direct ou 1 correspondance"""
     departure_query = from_station or origin
     if not departure_query:
         raise HTTPException(status_code=400, detail="Paramètre 'from' ou 'origin' requis")
@@ -302,7 +292,7 @@ def explore_destinations(
 
         best_journeys = {}
 
-        # 1. Trajets directs (inclut le champ `type`)
+        # Trajets directs
         query_direct = """
         SELECT 
             destination_name AS to_name,
@@ -318,7 +308,7 @@ def explore_destinations(
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
           AND UPPER(destination_parent_name) != ?
         ORDER BY dep_min ASC
-        LIMIT 150
+        LIMIT 250
         """
         cursor.execute(query_direct, (date_clean, station, station, station))
         
@@ -351,7 +341,7 @@ def explore_destinations(
             if dest_id not in best_journeys or duration_min < best_journeys[dest_id]["duration"]:
                 best_journeys[dest_id] = journey
 
-        # 2. Trajets avec 1 correspondance (inclut les types des deux trains)
+        # Trajets avec correspondance
         query_transfers = """
         SELECT 
             t1.departure_time AS train1_dep,
@@ -380,7 +370,7 @@ def explore_destinations(
           AND t2.dep_min >= (t1.arr_min + 15)
           AND t2.dep_min <= (t1.arr_min + 180)
         ORDER BY t1.dep_min ASC
-        LIMIT 150
+        LIMIT 250
         """
         cursor.execute(query_transfers, (date_clean, station, station, station))
 
