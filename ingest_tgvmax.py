@@ -1,22 +1,16 @@
+import os
 import sqlite3
 import pandas as pd
 import requests
 
-# Helper pour déterminer le type de train à partir de l'objet API
+# Helper pour déterminer le type de train selon l'axe
 def detect_train_type(item):
-    entity = str(item.get('entity', '')).upper()
-    axe = str(item.get('axe', '')).upper()
-
-    if entity.startswith("OUIGO") or axe.startswith("OUIGO"):
+    axe = str(item.get('axe', '')).upper().strip()
+    if axe.startswith("OUIGO"):
         return "OUIGO"
-    if "AUTOCAR" in entity or "AUTOCAR" in axe:
-        return "Autocar SNCF"
-    if axe.startswith("IC ") or "INTERCITES" in axe:
+    if axe.startswith("IC"):
         return "INTERCITÉS"
-    if axe == "INTERNATIONAL" or "TGV" in axe or "SUD-EST" in axe or "ATLANTIQUE" in axe:
-        return "TGV INOUI"
-    
-    return "Train SNCF"
+    return "TGV INOUI"
 
 # 1. Chargement et résolution des gares
 print("1. Chargement des gares...")
@@ -99,14 +93,17 @@ for item in raw_data:
         'dep_min': time_to_minutes(dep_time),
         'arr_min': time_to_minutes(arr_time),
         'train_no': item.get('train_no'),
-        'train_type': detect_train_type(item)  # Ajout de la colonne
+        'type': detect_train_type(item)  # Ajout de la colonne type
     })
 
 df_trips = pd.DataFrame(records)
 
-# 4. Enregistrement SQLite
-print("4. Écriture dans SQLite...")
-conn = sqlite3.connect('tgvmax_compact.db')
+# 4. Enregistrement SQLite (Chemin absolu pour éviter l'erreur SQLITE_CANTOPEN)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+db_path = os.path.join(BASE_DIR, 'tgvmax_compact.db')
+
+print(f"4. Écriture dans SQLite ({db_path})...")
+conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
 cursor.execute('PRAGMA journal_mode = WAL;')
@@ -134,7 +131,7 @@ CREATE TABLE trips (
     dep_min INTEGER NOT NULL,
     arr_min INTEGER NOT NULL,
     train_no TEXT,
-    train_type TEXT NOT NULL
+    type TEXT NOT NULL
 );
 ''')
 
