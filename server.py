@@ -177,7 +177,7 @@ def search_all(
             departure_time AS train1_dep, 
             arrival_time AS train1_arr, 
             train_no AS train1_no
-            type AS train1_type
+            [type] AS train1_type
         FROM trips
         WHERE date = ?
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
@@ -226,11 +226,11 @@ def search_all(
             t2.dest_lat AS dest_lat, t2.dest_lon AS dest_lon,
             t1.date AS date,
             t1.train_no AS train1_no,
-            t1.type AS train1_type,
+            t1.[type] AS train1_type,
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t2.train_no AS train2_no,
-            t2.type AS train2_type,
+            t2.[type] AS train2_type,
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
