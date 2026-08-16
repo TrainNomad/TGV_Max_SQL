@@ -177,6 +177,7 @@ def search_all(
             departure_time AS train1_dep, 
             arrival_time AS train1_arr, 
             train_no AS train1_no
+            type AS train1_type
         FROM trips
         WHERE date = ?
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
@@ -198,7 +199,7 @@ def search_all(
                 "dest_lon": d["dest_lon"],
                 "date": d["date"],
                 "train1_no": d["train1_no"],
-                "train1_type": "TGV INOUI",
+                "train1_type": d["train1_type"],
                 "train1_dep": d["train1_dep"],
                 "train1_arr": d["train1_arr"],
                 "transfer_station_arr": None,
@@ -225,9 +226,11 @@ def search_all(
             t2.dest_lat AS dest_lat, t2.dest_lon AS dest_lon,
             t1.date AS date,
             t1.train_no AS train1_no,
+            t1.type AS train1_type,
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t2.train_no AS train2_no,
+            t2.type AS train2_type,
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
@@ -249,8 +252,8 @@ def search_all(
         valid_connections = []
         for c in conn_rows:
             c["is_direct"] = False
-            c["train1_type"] = "TGV INOUI"
-            c["train2_type"] = "TGV INOUI"
+            # c["train1_type"] = "TGV INOUI"
+            # c["train2_type"] = "TGV INOUI"
             is_same_station = c["transfer_station_arr"] == c["transfer_station_dep"]
             layover = c["layover_minutes"]
             c["is_valid_layover"] = (15 <= layover <= 120) if is_same_station else (60 <= layover <= 180)
