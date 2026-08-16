@@ -176,8 +176,8 @@ def search_all(
             origin_lat, origin_lon, dest_lat, dest_lon,
             departure_time AS train1_dep, 
             arrival_time AS train1_arr, 
-            train_no AS train1_no
-            [type] AS train1_type
+            train_no AS train1_no,
+            train_type AS train1_type
         FROM trips
         WHERE date = ?
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
@@ -226,11 +226,11 @@ def search_all(
             t2.dest_lat AS dest_lat, t2.dest_lon AS dest_lon,
             t1.date AS date,
             t1.train_no AS train1_no,
-            t1.[type] AS train1_type,
+            t1.train_type AS train1_type,
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t2.train_no AS train2_no,
-            t2.[type] AS train2_type,
+            t2.train_type AS train2_type,
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
@@ -252,8 +252,6 @@ def search_all(
         valid_connections = []
         for c in conn_rows:
             c["is_direct"] = False
-            # c["train1_type"] = "TGV INOUI"
-            # c["train2_type"] = "TGV INOUI"
             is_same_station = c["transfer_station_arr"] == c["transfer_station_dep"]
             layover = c["layover_minutes"]
             c["is_valid_layover"] = (15 <= layover <= 120) if is_same_station else (60 <= layover <= 180)
@@ -304,7 +302,8 @@ def explore_destinations(
             departure_time AS dep_str,
             arrival_time AS arr_str,
             dep_min, arr_min,
-            train_no
+            train_no,
+            train_type
         FROM trips
         WHERE date = ? 
           AND (UPPER(origin_name) = ? OR UPPER(origin_parent_name) = ?)
@@ -334,6 +333,7 @@ def explore_destinations(
                     "dep_str": row["dep_str"],
                     "arr_str": row["arr_str"],
                     "train_no": row["train_no"],
+                    "train_type": row["train_type"],
                     "lat": row["dest_lat"],
                     "lon": row["dest_lon"],
                 }],
@@ -348,6 +348,7 @@ def explore_destinations(
             t1.departure_time AS train1_dep,
             t1.arrival_time AS train1_arr,
             t1.train_no AS train1_no,
+            t1.train_type AS train1_type,
             t1.destination_name AS transfer_arr,
             t2.origin_name AS transfer_dep,
             t2.destination_name AS to_name,
@@ -356,6 +357,7 @@ def explore_destinations(
             t2.departure_time AS train2_dep,
             t2.arrival_time AS train2_arr,
             t2.train_no AS train2_no,
+            t2.train_type AS train2_type,
             t1.dep_min AS start_dep,
             t2.arr_min AS end_arr,
             (t2.dep_min - t1.arr_min) AS layover_minutes
@@ -401,6 +403,7 @@ def explore_destinations(
                         "dep_str": row["train1_dep"],
                         "arr_str": row["train1_arr"],
                         "train_no": row["train1_no"],
+                        "train_type": row["train1_type"],
                         "lat": None,
                         "lon": None,
                     },
@@ -411,6 +414,7 @@ def explore_destinations(
                         "dep_str": row["train2_dep"],
                         "arr_str": row["train2_arr"],
                         "train_no": row["train2_no"],
+                        "train_type": row["train2_type"],
                         "lat": row["dest_lat"],
                         "lon": row["dest_lon"],
                     },

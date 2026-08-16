@@ -93,12 +93,12 @@ for item in raw_data:
         'dep_min': time_to_minutes(dep_time),
         'arr_min': time_to_minutes(arr_time),
         'train_no': item.get('train_no'),
-        'type': detect_train_type(item)  # Ajout de la colonne type
+        'train_type': detect_train_type(item)
     })
 
 df_trips = pd.DataFrame(records)
 
-# 4. Enregistrement SQLite (Chemin absolu pour éviter l'erreur SQLITE_CANTOPEN)
+# 4. Enregistrement SQLite (Chemin absolu)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 db_path = os.path.join(BASE_DIR, 'tgvmax_compact.db')
 
@@ -131,7 +131,7 @@ CREATE TABLE trips (
     dep_min INTEGER NOT NULL,
     arr_min INTEGER NOT NULL,
     train_no TEXT,
-    type TEXT NOT NULL
+    train_type TEXT NOT NULL
 );
 ''')
 
